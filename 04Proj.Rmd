@@ -1,0 +1,148 @@
+---
+title: "04Proj"
+output: pdf_document
+date: "2022-12-06"
+---
+
+---
+title: "Proj_exp_02"
+output: pdf_document
+date: "2022-12-05"
+---
+
+
+
+```{r}
+library(tidyverse)
+library(tidymodels)
+#library("dplyr")
+library(stringr)
+#library(conflicted)
+#conflict_prefer("filter", "dplyr")
+tidymodels_prefer()
+
+```
+
+
+```{r}
+data <- read_csv("~/R/KDD-R/Data/final_data-2.csv", quote = "")
+
+View(data)
+
+```
+
+```{r}
+data<- data %>% 
+  na.omit()
+```
+
+```{r}
+data<- data[!duplicated(data$Hosp_Name),]
+
+```
+
+```{r}
+set.seed(1526)
+data_split <- initial_split(data, prop = 0.70)
+data_train <- training(data_split)
+data_test  <- testing(data_split)
+
+set.seed(1700)
+data_folds <- vfold_cv(data_train)
+data_folds
+
+```
+```{r}
+
+library(embed)
+
+data_rec <-recipe((cost_to_pat ~.), data = data_train)%>% 
+  update_role(Prv_Zip, Hosp_Typ,Rndrng_Prvdr_City,City, new_role = 'id') %>% 
+  step_lencode_glm(State, outcome = vars(cost_to_pat)) %>% 
+  step_dummy(all_nominal_predictors())
+
+data_rec <- data_rec %>%
+  step_other(cost_to_pat ~., threshold = 1.0, other = "other values")
+
+data_rec
+
+```
+```{r}
+# xgboost for feature selection
+library(xgboost)
+#defined model for xgboost
+xgb_spec <- boost_tree(trees = tune(),
+                       min_n = tune(),
+                       mode ="regression",
+                       engine = "xgboost",
+                       mtry=tune(),
+                       learn_rate = 0.01
+                       )
+
+```
+
+```{r}
+# workflow
+library(workflows)
+
+xgb_wf<-workflow(data_rec, xgb_spec)
+
+```
+
+```{r}
+# tuning the hyperparameters for the model
+
+library(finetune)
+doParallel::registerDoParallel()
+
+set.seed(420)
+xgb_rs<-
+  tune_race_anova(
+    xgb_wf,
+    resamples = data_folds,
+    grid = 15,
+    metric_set("rmse"),
+    control = control_race(verbose_elim = TRUE),
+    )
+
+xgb_rs
+
+```
+```{r}
+plot_race(xgb_rs)
+```
+
+```{r}
+show_best(xgb_rs)
+```
+
+```{r}
+xgb_last <- xgb_wf %>%
+  finalize_workflow(select_best(xgb_rs, "rmse")) %>%
+  last_fit(data_split)
+
+xgb_last
+```
+
+```{r}
+collect_predictions(xgb_last)
+```
+
+```{r}
+library(vip)
+extract_workflow(xgb_last) %>%
+  extract_fit_parsnip() %>%
+  vip(geom = "point", num_features = 5)
+```
+
+```{r}
+library(vip)
+extract_workflow(xgb_last) %>%
+  extract_fit_parsnip() %>%
+  vip(geom = "point")
+```
+
+
+
+
+

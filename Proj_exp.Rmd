@@ -1,0 +1,1632 @@
+---
+title: "Proj_exp"
+output: pdf_document
+date: "2022-12-04"
+---
+
+
+
+```{r}
+library(tidyverse)
+library(tidymodels)
+#library("dplyr")
+library(stringr)
+library(bestNormalize)
+#library(conflicted)
+#conflict_prefer("filter", "dplyr")
+#tidymodels_prefer()
+library(xgboost)
+library(readr)
+library(stringr)
+library(caret)
+library(Metrics)
+
+```
+
+
+```{r}
+data <- read_csv("~/R/KDD-R/Data/final_data(v.2).csv", show_col_types = FALSE)
+
+```
+
+```{r}
+
+medi <- data[, -c( 3, 15, 16)]%>% 
+  dplyr::rename(Pop_total = B16010_001E)
+```
+
+
+
+```{r}
+#conflict_prefer("filter", "dplyr")
+
+#medi$Hosp_oa_rat <- factor(medi$Hosp_oa_rat)
+#medi$Prv_RUCA <- factor(medi$Prv_RUCA)
+#medi$DRG_Cd <- factor(medi$DRG_Cd)
+medi$Emg_Svcs <- factor(medi$Emg_Svcs)
+#medi$Prv_CCN <- factor(medi$Prv_CCN)
+#medi$Prv_Zip <- factor(medi$Prv_Zip)
+medi$State <- factor(medi$State)
+medi$Hosp_Own <- factor(medi$Hosp_Own)
+medi$Cnt_Name <- factor(medi$Cnt_Name)
+medi$Hosp_Name<- factor(medi$Hosp_Name)
+medi$City <- factor(medi$City)
+
+view(medi)
+```
+
+
+```{r}
+# to split it into AMI dataset
+medi_data_AMI <- data %>% 
+  filter(DRG_Cd %in% c("246", "247", "248", "249", "250", "251","280","281","282"))
+glimpse(medi_data_AMI)
+
+
+
+```
+
+
+
+```{r}
+# to create Pnuemonia dataset
+medi_data_Pn <- data %>% 
+  filter(DRG_Cd %in% c('177', '178', '179', '193', '194', '195'))
+
+
+glimpse(medi_data_Pn)
+```
+
+
+```{r}
+#####################
+
+
+
+# splitting the data into training and testing sets (AMI)
+set.seed(1526)
+AMI_split <- initial_split(medi_data_AMI, prop = 0.70, strata = Cost_to_pat)
+AMI_train <- training(AMI_split)
+AMI_test  <- testing(AMI_split)
+
+#cross-validation folds
+set.seed(1700)
+AMI_folds <- vfold_cv(AMI_train, strata = Cost_to_pat)
+AMI_folds
+
+```
+
+
+
+
+```{r}
+
+
+#Modeling on all the 69 features
+
+#Decison Tree using XGBoost
+
+# reference: https://www.statology.org/xgboost-in-r/
+set.seed(0)
+#define predictor and response variables in training set
+AMI_train_x <- data.matrix(AMI_train[, -11])
+AMI_train_y <- as.matrix(AMI_train[,11])
+
+#define predictor and response variables in testing set
+AMI_test_x <-data.matrix(AMI_test[, -11])
+AMI_test_y <- as.matrix(AMI_test[,11])
+
+#define final training and testing sets
+xgb_train = xgb.DMatrix(data = AMI_train_x, label = AMI_train_y)
+xgb_test = xgb.DMatrix(data = AMI_test_x, label = AMI_test_y)
+
+```
+
+```{r}
+xgb_params <- list(
+  booster = "gbtree",
+  eta = 0.3,
+  max_depth = 5,
+  gamma = 4,
+  subsample = 0.75,
+  colsample_bytree = 1,
+  eval_metric = "rmse"
+)
+
+xgb_model <- xgb.train(
+  params = xgb_params,
+  data = xgb_train,
+  nrounds = 300,
+  verbose = 1
+)
+xgb_model
+
+
+```
+
+```{r}
+importance_matrix <- xgb.importance(
+  feature_names = colnames(xgb_train), 
+  model = xgb_model
+)
+importance_matrix
+```
+```{r}
+# plot
+xgb.plot.importance(importance_matrix)
+```
+```{r}
+# plot them features! what's contributing most to our model?
+xgb.plot.multi.trees(feature_names = names(AMI_train_x), 
+                     model = xgb_model)
+```
+
+```{r}
+#define final model
+final = xgboost(data = xgb_train, max.depth = 3, nrounds = 166, verbose = 0)
+```
+
+```{r}
+#use model to make predictions on test data
+pred_y = predict(final, xgb_test)
+```
+
+```{r}
+# performance metrics on the test data
+
+mean((AMI_test_y - pred_y)^2) #mse - Mean Squared Error
+```
+
+```{r}
+postResample(pred = pred_y, obs = AMI_test_y)
+```
+
+
+
+
+```{r}
+x = 1:length(AMI_test_y)                   # visualize the model, actual and predicted data
+plot(x, AMI_test_y, col = "red", type = "l")
+lines(x, pred_y, col = "blue", type = "l")
+legend(x = 1, y = 38,  legend = c("original test_y", "predicted test_y"), 
+       col = c("red", "blue"), box.lty = 1, cex = 0.8, lty = c(1, 1))
+```
+
+```{r}
+library(mlbench)
+AMI1 <- AMI_train %>% 
+  select(Cost_to_pat,State,Prv_Zip,Prv_CCN,Cnt_Name,Hosp_Own,Hosp_Name,Prv_RUCA,Hosp_oa_rat,Emg_Svcs,DRG_Cd)
+
+lm.fit1 <- lm(Cost_to_pat ~ ., data=AMI1)
+lm.predict1 <- predict(lm.fit1)
+```
+
+```{r}
+actual <- AMI1$Cost_to_pat
+preds <- lm.predict1
+```
+
+```{r}
+Metrics::rmse(actual, preds)
+Metrics::mae(actual,preds)
+```
+
+```{r}
+rss <- sum((preds - actual) ^ 2)  ## residual sum of squares
+tss <- sum((actual - mean(actual)) ^ 2)  ## total sum of squares
+rsq <- 1 - rss/tss
+print(rsq)
+```
+
+```{r}
+plot(AMI1$Cost_to_pat, lm.predict1,
+main="Linear regression predictions vs actual",
+xlab="Actual")
+```
+
+```{}
+summary(lm.fit1)
+par(mfrow=c(2,2))
+plot(lm.fit1)
+```
+```{r}
+plot(lm.fit1)
+```
+
+```{r}
+#Lm model -2 (AMI)
+AMI2 <- AMI_train %>% 
+  select(Cost_to_pat,State,Prv_Zip,Cnt_Name,Hosp_Own,Hosp_Name,Hosp_oa_rat,Emg_Svcs,DRG_Cd)
+```
+
+```{r}
+#Lm model-2
+lm.fitAMI2 <- lm(Cost_to_pat ~., data=AMI2)
+lm.predictAMI2 <- predict(lm.fitAMI2)
+```
+
+
+```{r}
+plot(AMI2$Cost_to_pat, lm.predictAMI2,
+main="Linear regression predictions vs actual",
+xlab="Actual")
+```
+```{}
+summary(lm.fitAMI2)
+par(mfrow=c(2,2))
+plot(lm.fitAMI2)
+```
+```{r}
+plot(lm.fitAMI2)
+```
+
+```{r}
+# lm model - 3 (AMI)
+AMI3 <- AMI_train %>% 
+  select(Cost_to_pat,Prv_Zip,Hosp_Own,Hosp_oa_rat,Emg_Svcs,DRG_Cd)
+```
+
+```{r}
+#Lm model-3
+lm.fitAMI3 <- lm(Cost_to_pat ~., data=AMI3)
+lm.predictAMI3 <- predict(lm.fitAMI3)
+```
+
+```{r}
+actual <- AMI3$Cost_to_pat
+preds <- lm.predictAMI3
+```
+
+```{r}
+Metrics::rmse(actual, preds)
+Metrics::mae(actual,preds)
+```
+
+```{r}
+rss <- sum((preds - actual) ^ 2)  ## residual sum of squares
+tss <- sum((actual - mean(actual)) ^ 2)  ## total sum of squares
+rsq <- 1 - rss/tss
+print(rsq)
+```
+
+```{r}
+plot(AMI3$Cost_to_pat, lm.predictAMI3,
+main="Linear regression predictions vs actual",
+xlab="Actual")
+```
+
+```{}
+summary(lm.fitAMI3)
+par(mfrow=c(2,2))
+plot(lm.fitAMI3)
+```
+```{r}
+plot(lm.fitAMI3)
+```
+
+
+```{r}
+
+AMI4 <- AMI_train %>% 
+  select(Cost_to_pat,Prv_Zip,Hosp_oa_rat,DRG_Cd)
+```
+
+```{r}
+#Lm model-4
+lm.fitAMI4 <- lm(Cost_to_pat ~., data=AMI4)
+lm.predictAMI4 <- predict(lm.fitAMI4)
+```
+
+```{r}
+actual <- AMI4$Cost_to_pat
+preds <- lm.predictAMI4
+```
+
+```{r}
+Metrics::rmse(actual, preds)
+Metrics::mae(actual,preds)
+```
+
+```{r}
+rss <- sum((preds - actual) ^ 2)  ## residual sum of squares
+tss <- sum((actual - mean(actual)) ^ 2)  ## total sum of squares
+rsq <- 1 - rss/tss
+print(rsq)
+```
+
+```{r}
+plot(AMI4$Cost_to_pat, lm.predictAMI4,
+main="Linear regression predictions vs actual",
+xlab="Actual")
+```
+
+```{}
+summary(lm.fitAMI4)
+par(mfrow=c(2,2))
+plot(lm.fitAMI4)
+```
+```{r}
+plot(lm.fitAMI4)
+```
+
+```{r}
+library(nnet)
+
+AMInnet <- medi_data_AMI %>% 
+  select(State, Prv_Zip,Prv_CCN, Cnt_Name, Hosp_Own,Hosp_Name, Hosp_oa_rat,DRG_Cd, Cost_to_pat)
+# scale inputs: divide by 50 to get 0-1 range
+nnet.fit <- nnet(Cost_to_pat/50 ~ ., data=AMInnet, size=5, MaxNWts=84581)
+```
+
+```{r}
+# multiply 50 to restore original scale
+nnet.predict <- predict(nnet.fit)*50
+```
+
+```{r}
+actual <- AMInnet$Cost_to_pat
+preds <- nnet.predict
+```
+
+```{r}
+Metrics::rmse(actual, preds)
+Metrics::mae(actual,preds)
+```
+
+```{r}
+rss <- sum((preds - actual) ^ 2)  ## residual sum of squares
+tss <- sum((actual - mean(actual)) ^ 2)  ## total sum of squares
+rsq <- 1 - rss/tss
+print(rsq)
+```
+  
+```{r}
+plot(AMInnet$Cost_to_pat, nnet.predict,
+main="Neural network predictions vs actual",
+xlab="Actual")
+```
+
+
+
+```{r}
+# manulally selected the variables
+CleanDataAMI <- medi_data_AMI %>% 
+  select(Cost_to_pat,State,Prv_Zip,Cnt_Name,Hosp_Own,Hosp_Name,Hosp_oa_rat,Emg_Svcs,DRG_Cd)
+view(CleanDataAMI)
+
+```
+
+```{r}
+library(PerformanceAnalytics)
+CleanDataAMI %>%
+dplyr::select_if(is.numeric) %>%
+  chart.Correlation()
+
+```
+
+```{r}
+# splitting the data into training and testing sets (AMI)
+set.seed(1526)
+AMI_split2 <- initial_split(CleanDataAMI, prop = 0.70, strata = Cost_to_pat)
+AMI_train2 <- training(AMI_split2)
+AMI_test2  <- testing(AMI_split2)
+
+
+
+```
+
+```{r}
+#improved model -2
+# refence: https://www.statology.org/xgboost-in-r/
+set.seed(0)
+#define predictor and response variables in training set
+AMI_train_x2 <- data.matrix(AMI_train2[, -9])
+AMI_train_y2 <- as.matrix(AMI_train2[,9])
+
+#define predictor and response variables in testing set
+AMI_test_x2 <-data.matrix(AMI_test2[, -9])
+AMI_test_y2 <- as.matrix(AMI_test2[,9])
+
+#define final training and testing sets
+xgbAMI_train2 = xgb.DMatrix(data = AMI_train_x2, label = AMI_train_y2)
+xgbAMI_test2 = xgb.DMatrix(data = AMI_test_x2, label = AMI_test_y2)
+
+```
+
+```{r}
+xgb_params <- list(
+  booster = "gbtree",
+  eta = 0.3,
+  max_depth = 5,
+  gamma = 4,
+  subsample = 0.75,
+  colsample_bytree = 1,
+  eval_metric = "rmse"
+)
+
+xgbAMI_model2 <- xgb.train(
+  params = xgb_params,
+  data = xgbAMI_train2,
+  nrounds = 300,
+  verbose = 1
+)
+xgbAMI_model2
+
+
+```
+
+```{r}
+importance_matrixAMI2 <- xgb.importance(
+  feature_names = colnames(xgbAMI_train2), 
+  model = xgbAMI_model2
+)
+importance_matrix
+```
+
+```{r}
+# plot
+xgb.plot.importance(importance_matrixAMI2)
+```
+
+```{r}
+#define final model
+finalAMI2 = xgboost(data = xgbAMI_train2, max.depth = 3, nrounds = 166, verbose = 0)
+```
+
+```{r}
+#use model to make predictions on test data
+pred_y2 = predict(finalAMI2, xgbAMI_test2)
+```
+
+```{r}
+# performance metrics on the test data
+
+mean((AMI_test_y2 - pred_y2)^2) #mse - Mean Squared Error
+```
+
+```{r}
+postResample(pred = pred_y2, obs = AMI_test_y2)
+```
+
+
+```{r}
+# plot them features! what's contributing most to our model?
+xgb.plot.multi.trees(feature_names = names(AMI_train_x2), 
+                     model = xgbAMI_model2)
+```
+
+```{r}
+x = 1:length(AMI_test_y2)                   # visualize the model, actual and predicted data
+plot(x, AMI_test_y2, col = "red", type = "l")
+lines(x, pred_y2, col = "blue", type = "l")
+legend(x = 1, y = 38,  legend = c("original test_y", "predicted test_y"), 
+       col = c("red", "blue"), box.lty = 1, cex = 0.8, lty = c(1, 1))
+```
+
+
+
+
+
+```{r}
+NormDataAMI <- CleanDataAMI %>% mutate(Cost_to_pat = log10(Cost_to_pat))
+```
+
+```{r}
+library(PerformanceAnalytics)
+NormDataAMI %>%
+dplyr::select_if(is.numeric) %>%
+  chart.Correlation()
+
+```
+
+```{r}
+# splitting the data into training and testing sets (AMI)
+set.seed(1526)
+AMI_split3 <- initial_split(NormDataAMI, prop = 0.70, strata = Cost_to_pat)
+AMI_train3 <- training(AMI_split3)
+AMI_test3  <- testing(AMI_split3)
+
+#cross-validation folds
+set.seed(1700)
+AMI_folds3 <- vfold_cv(AMI_train3, strata = Cost_to_pat)
+AMI_folds3
+
+```
+
+
+```{r}
+#improved model -2
+# refence: https://www.statology.org/xgboost-in-r/
+set.seed(0)
+#define predictor and response variables in training set
+AMI_train_x3 <- data.matrix(AMI_train3[, -9])
+AMI_train_y3 <- as.matrix(AMI_train3[,9])
+
+#define predictor and response variables in testing set
+AMI_test_x3 <-data.matrix(AMI_test3[, -9])
+AMI_test_y3 <- as.matrix(AMI_test3[,9])
+
+#define final training and testing sets
+xgbAMI_train3 = xgb.DMatrix(data = AMI_train_x3, label = AMI_train_y3)
+xgbAMI_test3 = xgb.DMatrix(data = AMI_test_x3, label = AMI_test_y3)
+
+```
+
+```{r}
+xgb_params <- list(
+  booster = "gbtree",
+  eta = 0.1,
+  max_depth = 5,
+  gamma = 4,
+  subsample = 0.75,
+  colsample_bytree = 1,
+  eval_metric = "rmse"
+)
+
+xgbAMI_model3 <- xgb.train(
+  params = xgb_params,
+  data = xgbAMI_train3,
+  nrounds = 300,
+  verbose = 1
+)
+xgbAMI_model3
+
+
+```
+
+```{r}
+importance_matrixAMI3 <- xgb.importance(
+  feature_names = colnames(xgbAMI_train3), 
+  model = xgbAMI_model3
+)
+importance_matrixAMI3
+```
+
+```{r}
+# plot
+xgb.plot.importance(importance_matrixAMI3)
+```
+
+```{r}
+#define final model
+finalAMI3 = xgboost(data = xgbAMI_train3, max.depth = 3, nrounds = 166, verbose = 0)
+```
+
+```{r}
+#use model to make predictions on test data
+pred_y3 = predict(finalAMI3, xgbAMI_test3)
+```
+
+```{r}
+# performance metrics on the test data
+
+mean((AMI_test_y3 - pred_y3)^2) #mse - Mean Squared Error
+
+```
+
+```{r}
+postResample(pred = pred_y2, obs = AMI_test_y2)
+```
+
+```{r}
+# plot them features! what's contributing most to our model?
+xgb.plot.multi.trees(feature_names = names(AMI_train_x3), 
+                     model = xgbAMI_model3)
+```
+
+```{r}
+x = 1:length(AMI_test_y3)                   # visualize the model, actual and predicted data
+plot(x, AMI_test_y3, col = "red", type = "l")
+lines(x, pred_y3, col = "blue", type = "l")
+legend(x = 1, y = 38,  legend = c("original test_y", "predicted test_y"), 
+       col = c("red", "blue"), box.lty = 1, cex = 0.8, lty = c(1, 1))
+```
+```{r}
+library(nnet)
+
+# scale inputs: divide by 50 to get 0-1 range
+nnet.fit2 <- nnet(Cost_to_pat/50 ~ ., data=AMI_train2, size=5, MaxNWts=84581)
+```
+
+```{r}
+# multiply 50 to restore original scale
+nnet.predict2 <- predict(nnet.fit2)*50
+```
+
+
+```{r}
+actual <- AMI_train2$Cost_to_pat
+preds <- nnet.predict2
+```
+
+```{r}
+Metrics::rmse(actual, preds)
+Metrics::mae(actual,preds)
+```
+
+```{r}
+rss <- sum((preds - actual) ^ 2)  ## residual sum of squares
+tss <- sum((actual - mean(actual)) ^ 2)  ## total sum of squares
+rsq <- 1 - rss/tss
+print(rsq)
+```
+
+```{r}
+plot(AMI_train2$Cost_to_pat, nnet.predict2,
+main="Neural network predictions vs actual",
+xlab="Actual")
+```
+
+```{r}
+library(nnet)
+
+# scale inputs: divide by 50 to get 0-1 range
+nnet.fit3 <- nnet(Cost_to_pat/50 ~ ., data=AMI_train3, size=2, MaxNWts=84581)
+```
+
+```{r}
+# multiply 50 to restore original scale
+nnet.predict3 <- predict(nnet.fit3)*50
+```
+  
+
+```{r}
+plot(AMI_train3$Cost_to_pat, nnet.predict3,
+main="Neural network predictions vs actual",
+xlab="Actual")
+```
+```{r}
+#Normalized Lm model
+lm.fitAMI5 <- lm(Cost_to_pat ~., data=AMI_train3)
+lm.predictAMI5 <- predict(lm.fitAMI5)
+```
+
+```{r}
+plot(AMI_train2$Cost_to_pat, lm.predictAMI5,
+main="Linear regression predictions vs actual",
+xlab="Actual")
+```
+
+
+
+
+```{r}
+plot(lm.fitAMI5)
+```
+
+
+
+
+
+
+
+
+
+```{r}
+# splitting the data into training and testing sets (Pn)
+set.seed(1526)
+Pn_split <- initial_split(medi_data_Pn, prop = 0.70, strata = Cost_to_pat)
+Pn_train <- training(Pn_split)
+Pn_test  <- testing(Pn_split)
+
+#cross-validation folds
+set.seed(1700)
+Pn_folds <- vfold_cv(Pn_train, strata = Cost_to_pat)
+Pn_folds
+
+```
+
+```{r}
+library(mlbench)
+Pn1 <- Pn_train %>% 
+  select(Cost_to_pat,State,Prv_Zip,Prv_CCN,Cnt_Name,Hosp_Own,Hosp_Name,Prv_RUCA,Hosp_oa_rat,Emg_Svcs,DRG_Cd)
+```
+
+
+
+```{r}
+lm.fitPn <- lm(Cost_to_pat ~ State+Prv_Zip+Prv_CCN+Cnt_Name+Hosp_Own+Hosp_Name+Prv_RUCA+Hosp_oa_rat+Emg_Svcs+ DRG_Cd, data=Pn1)
+lm.predictPn <- predict(lm.fitPn)
+```
+
+```{r}
+plot(Pn1$Cost_to_pat, lm.predictPn,
+main="Linear regression predictions vs actual",
+xlab="Actual")
+```
+
+```{}
+summary(lm.fitPn)
+par(mfrow=c(2,2))
+
+```
+
+```{r}
+plot(lm.fitPn)
+```
+
+
+```{r}
+actual <- Pn1$Cost_to_pat
+preds <- lm.predictPn
+```
+
+```{r}
+Metrics::rmse(actual, preds)
+Metrics::mae(actual,preds)
+```
+
+```{r}
+rss <- sum((preds - actual) ^ 2)  ## residual sum of squares
+tss <- sum((actual - mean(actual)) ^ 2)  ## total sum of squares
+rsq <- 1 - rss/tss
+print(rsq)
+```
+
+```{r}
+Pn2 <- Pn_train %>% 
+  select(Cost_to_pat,State,Prv_Zip,Cnt_Name,Hosp_Own,Hosp_Name,Hosp_oa_rat,Emg_Svcs,DRG_Cd)
+```
+
+```{r}
+#Lm model-2
+lm.fitPn2 <- lm(Cost_to_pat ~., data=Pn2)
+lm.predictPn2 <- predict(lm.fitPn2)
+```
+
+```{r}
+plot(Pn2$Cost_to_pat, lm.predictPn2,
+main="Linear regression predictions vs actual",
+xlab="Actual")
+```
+```{}
+summary(lm.fitPn2)
+par(mfrow=c(2,2))
+```
+
+```{r}
+plot(lm.fitPn2)
+```
+```{r}
+actual <- Pn2$Cost_to_pat
+preds <- lm.predictPn2
+```
+
+```{r}
+Metrics::rmse(actual, preds)
+Metrics::mae(actual,preds)
+```
+
+```{r}
+rss <- sum((preds - actual) ^ 2)  ## residual sum of squares
+tss <- sum((actual - mean(actual)) ^ 2)  ## total sum of squares
+rsq <- 1 - rss/tss
+print(rsq)
+```
+
+```{r}
+# lm model - 3 (Pn)
+Pn3 <- Pn_train %>% 
+  select(Cost_to_pat,Prv_Zip,Hosp_Own,Hosp_oa_rat,Emg_Svcs,DRG_Cd)
+```
+
+```{r}
+#Lm model-3
+lm.fitPn <- lm(Cost_to_pat ~., data=Pn3)
+lmpredictP <- predict(lm.fitPn3)
+
+```
+
+```{r}
+plot(Pn2$Cost_to_pat, lm.predictPn2,
+main="Linear regression predictions vs actual",
+xlab="Actual")
+```
+
+```{r}
+plot((lm.fitPn3))
+```
+
+```{r}
+actual <- Pn3$Cost_to_pat
+preds <- lmpredictP
+```
+
+```{r}
+Metrics::rmse(actual, preds)
+Metrics::mae(actual,preds)
+```
+
+```{r}
+rss <- sum((preds - actual) ^ 2)  ## residual sum of squares
+tss <- sum((actual - mean(actual)) ^ 2)  ## total sum of squares
+rsq <- 1 - rss/tss
+print(rsq)
+```
+
+
+```{r}
+
+Pn4 <- Pn_train %>% 
+  select(Cost_to_pat,Prv_Zip,Hosp_oa_rat,DRG_Cd,State, Hosp_Own)
+```
+
+```{r}
+#Lm model-4
+lm.fitPn4 <- lm(Cost_to_pat ~., data=Pn4)
+lm.predictPn4 <- predict(lm.fitPn4)
+```
+
+```{r}
+plot(Pn4$Cost_to_pat, lm.predictPn4,
+main="Linear regression predictions vs actual",
+xlab="Actual")
+```
+
+
+```{r}
+plot(lm.fitPn4)
+```
+```{r}
+actual <- Pn4$Cost_to_pat
+preds <- lm.predictPn4
+```
+
+```{r}
+Metrics::rmse(actual, preds)
+Metrics::mae(actual,preds)
+```
+
+```{r}
+rss <- sum((preds - actual) ^ 2)  ## residual sum of squares
+tss <- sum((actual - mean(actual)) ^ 2)  ## total sum of squares
+rsq <- 1 - rss/tss
+print(rsq)
+```
+```{r}
+library(nnet)
+
+# scale inputs: divide by 50 to get 0-1 range
+nnet.fit <- nnet(Cost_to_pat/50 ~ ., data=Pn1, size=2, MaxNWts=84581)
+```
+
+```{r}
+# multiply 50 to restore original scale
+nnet.predict <- predict(nnet.fit)*50
+```
+  
+```{r}
+plot(Pn1$Cost_to_pat, nnet.predict,
+main="Neural network predictions vs actual",
+xlab="Actual")
+```
+
+
+
+
+```{r}
+# refence: https://www.statology.org/xgboost-in-r/
+set.seed(0)
+#define predictor and response variables in training set
+Pn_train_x <- data.matrix(Pn_train[, -11])
+Pn_train_y <- as.matrix(Pn_train[,11])
+
+#define predictor and response variables in testing set
+Pn_test_x <-data.matrix(Pn_test[, -11])
+Pn_test_y <- as.matrix(Pn_test[,11])
+
+#define final training and testing sets
+xgbPn_train = xgb.DMatrix(data = Pn_train_x, label = Pn_train_y)
+xgbPn_test = xgb.DMatrix(data = Pn_test_x, label = Pn_test_y)
+
+```
+
+```{r}
+xgb_params <- list(
+  booster = "gbtree",
+  eta = 0.1,
+  max_depth = 5,
+  gamma = 4,
+  subsample = 0.75,
+  colsample_bytree = 1,
+  eval_metric = "rmse"
+)
+
+xgbPn_model <- xgb.train(
+  params = xgb_params,
+  data = xgbPn_train,
+  nrounds = 300,
+  verbose = 1
+)
+xgbPn_model
+
+
+```
+
+```{r}
+importance_matrix <- xgb.importance(
+  feature_names = colnames(xgbPn_train), 
+  model = xgbPn_model
+)
+importance_matrix
+```
+
+```{r}
+# plot
+xgb.plot.importance(importance_matrix)
+```
+
+```{r}
+# plot them features! what's contributing most to our model?
+xgb.plot.multi.trees(feature_names = names(Pn_train_x), 
+                     model = xgbPn_model)
+```
+
+```{r}
+#define final model
+finalPn = xgboost(data = xgbPn_train, max.depth = 3, nrounds = 166, verbose = 0)
+```
+
+```{r}
+#use model to make predictions on test data
+pred_y = predict(final, xgbPn_test)
+```
+
+```{r}
+# performance metrics on the test data
+
+mean((Pn_test_y - pred_y)^2) #mse - Mean Squared Error
+
+```
+
+
+```{r}
+postResample(pred = pred_y2, obs = AMI_test_y2)
+```
+
+
+```{r}
+x = 1:length(Pn_test_y)                   # visualize the model, actual and predicted data
+plot(x, Pn_test_y, col = "red", type = "l")
+lines(x, pred_y, col = "blue", type = "l")
+legend(x = 1, y = 38,  legend = c("original test_y", "predicted test_y"), 
+       col = c("red", "blue"), box.lty = 1, cex = 0.8, lty = c(1, 1))
+```
+
+```{r}
+# manulally selected the variables
+CleanDataPn <- medi_data_Pn %>% 
+  select(Prv_Zip,Hosp_Own,Hosp_oa_rat, Emg_Svcs, DRG_Cd, Cost_to_pat)
+
+view(CleanDataPn)
+
+```
+
+
+```{r}
+# splitting the data into training and testing sets (AMI)
+set.seed(1526)
+Pn_split2 <- initial_split(CleanDataPn, prop = 0.70, strata = Cost_to_pat)
+Pn_train2 <- training(Pn_split2)
+Pn_test2  <- testing(Pn_split2)
+
+#cross-validation folds
+set.seed(1700)
+Pn_folds2 <- vfold_cv(Pn_train2, strata = Cost_to_pat)
+Pn_folds2
+
+```
+
+```{r}
+#improved model -2
+# refence: https://www.statology.org/xgboost-in-r/
+set.seed(0)
+#define predictor and response variables in training set
+Pn_train_x2 <- data.matrix(Pn_train2[, -6])
+Pn_train_y2 <- as.matrix(Pn_train2[,6])
+
+#define predictor and response variables in testing set
+Pn_test_x2 <-data.matrix(Pn_test2[, -6])
+Pn_test_y2 <- as.matrix(Pn_test2[,6])
+
+#define final training and testing sets
+xgbPn_train2 = xgb.DMatrix(data = Pn_train_x2, label = Pn_train_y2)
+xgbPn_test2 = xgb.DMatrix(data = Pn_test_x2, label = Pn_test_y2)
+
+```
+
+```{r}
+xgb_params <- list(
+  booster = "gbtree",
+  eta = 0.1,
+  max_depth = 5,
+  gamma = 4,
+  subsample = 0.75,
+  colsample_bytree = 1,
+  eval_metric = "rmse"
+)
+
+xgbPn_model2 <- xgb.train(
+  params = xgb_params,
+  data = xgbPn_train2,
+  nrounds = 300,
+  verbose = 1
+)
+xgbPn_model2
+
+
+```
+
+```{r}
+importance_matrix <- xgb.importance(
+  feature_names = colnames(xgbPn_train2), 
+  model = xgbPn_model2
+)
+importance_matrix
+```
+
+```{r}
+# plot
+xgb.plot.importance(importance_matrix)
+```
+
+```{r}
+#define final model
+finalPn2 = xgboost(data = xgbPn_train2, max.depth = 3, nrounds = 166, verbose = 0)
+```
+
+```{r}
+#use model to make predictions on test data
+pred_y2 = predict(finalPn2, xgbPn_test2)
+```
+
+```{r}
+# performance metrics on the test data
+
+mean((Pn_test_y2 - pred_y2)^2) #mse - Mean Squared Error
+
+```
+
+```{r}
+postResample(pred = pred_y2, obs = Pn_test_y2)
+```
+
+```{r}
+# plot them features! what's contributing most to our model?
+xgb.plot.multi.trees(feature_names = names(Pn_train_x2), 
+                     model = xgbPn_model2)
+```
+
+```{r}
+x = 1:length(Pn_test_y2)                   # visualize the model, actual and predicted data
+plot(x, Pn_test_y2, col = "red", type = "l")
+lines(x, pred_y2, col = "blue", type = "l")
+legend(x = 1, y = 38,  legend = c("original test_y", "predicted test_y"), 
+       col = c("red", "blue"), box.lty = 1, cex = 0.8, lty = c(1, 1))
+```
+
+
+```{r}
+NormDataPn <- CleanDataPn %>% mutate(Cost_to_pat = log10(Cost_to_pat))
+
+```
+
+
+```{r}
+# splitting the data into training and testing sets (AMI)
+set.seed(1526)
+Pn_split3 <- initial_split(NormDataPn, prop = 0.70, strata = Cost_to_pat)
+Pn_train3 <- training(Pn_split3)
+Pn_test3  <- testing(Pn_split3)
+
+#cross-validation folds
+set.seed(1700)
+Pn_folds3 <- vfold_cv(Pn_train3, strata = Cost_to_pat)
+Pn_folds3
+
+```
+
+
+```{r}
+#improved model -2
+# refence: https://www.statology.org/xgboost-in-r/
+set.seed(0)
+#define predictor and response variables in training set
+Pn_train_x3 <- data.matrix(Pn_train3[, -6])
+Pn_train_y3 <- as.matrix(Pn_train3[,6])
+
+#define predictor and response variables in testing set
+Pn_test_x3 <-data.matrix(Pn_test3[, -6])
+Pn_test_y3 <- as.matrix(Pn_test3[,6])
+
+#define final training and testing sets
+xgbPn_train3 = xgb.DMatrix(data = Pn_train_x3, label = Pn_train_y3)
+xgbPn_test3 = xgb.DMatrix(data = Pn_test_x3, label = Pn_test_y3)
+
+```
+
+```{r}
+xgb_params <- list(
+  booster = "gbtree",
+  eta = 0.1,
+  max_depth = 5,
+  gamma = 4,
+  subsample = 0.75,
+  colsample_bytree = 1,
+  eval_metric = "rmse"
+)
+
+xgbPn_model3 <- xgb.train(
+  params = xgb_params,
+  data = xgbPn_train3,
+  nrounds = 300,
+  verbose = 1
+)
+xgbPn_model3
+
+
+```
+
+```{r}
+importance_matrix <- xgb.importance(
+  feature_names = colnames(xgbPn_train3), 
+  model = xgbPn_model3
+)
+importance_matrix
+```
+
+```{r}
+# plot
+xgb.plot.importance(importance_matrix)
+```
+
+```{r}
+#define final model
+finalPn3 = xgboost(data = xgbPn_train3, max.depth = 3, nrounds = 166, verbose = 0)
+```
+
+```{r}
+#use model to make predictions on test data
+pred_y3 = predict(finalPn3, xgbPn_test3)
+```
+
+```{r}
+# performance metrics on the test data
+
+mean((Pn_test_y3 - pred_y3)^2) #mse - Mean Squared Error
+
+```
+
+```{r}
+postResample(pred = pred_y3, obs = Pn_test_y3)
+```
+
+```{r}
+# plot them features! what's contributing most to our model?
+xgb.plot.multi.trees(feature_names = names(Pn_train_x3), 
+                     model = xgbPn_model3)
+```
+
+```{r}
+x = 1:length(Pn_test_y3)                   # visualize the model, actual and predicted data
+plot(x, Pn_test_y3, col = "red", type = "l")
+lines(x, pred_y3, col = "blue", type = "l")
+legend(x = 1, y = 38,  legend = c("original test_y", "predicted test_y"), 
+       col = c("red", "blue"), box.lty = 1, cex = 0.8, lty = c(1, 1))
+```
+
+
+
+
+```{}
+
+Verified the importance of features by using XGBoost in tidymodels
+```
+
+
+
+
+
+```{r}
+library(nnet)
+
+# scale inputs: divide by 50 to get 0-1 range
+nnet.fit <- nnet(Cost_to_pat/50 ~ ., data=Pn_train2, size=2, MaxNWts=84581)
+```
+
+```{r}
+# multiply 50 to restore original scale
+nnet.predict <- predict(nnet.fit)*50
+```
+  
+```{r}
+plot(Pn_train2$Cost_to_pat, nnet.predict,
+main="Neural network predictions vs actual",
+xlab="Actual")
+```
+
+
+```{r}
+actual <- Pn_train2$Cost_to_pat
+preds <- nnet.predict
+```
+
+```{r}
+Metrics::rmse(actual, preds)
+Metrics::mae(actual,preds)
+```
+
+```{r}
+rss <- sum((preds - actual) ^ 2)  ## residual sum of squares
+tss <- sum((actual - mean(actual)) ^ 2)  ## total sum of squares
+rsq <- 1 - rss/tss
+print(rsq)
+```
+
+```{r}
+library(nnet)
+
+# scale inputs: divide by 50 to get 0-1 range
+nnet.fit <- nnet(Cost_to_pat/50 ~ ., data=Pn_train3, size=2, MaxNWts=84581)
+```
+
+```{r}
+# multiply 50 to restore original scale
+nnet.predict <- predict(nnet.fit)*50
+```
+  
+```{r}
+plot(Pn_train3$Cost_to_pat, nnet.predict,
+main="Neural network predictions vs actual",
+xlab="Actual")
+```
+
+
+```{r}
+actual <- Pn_train3$Cost_to_pat
+preds <- nnet.predict
+```
+
+```{r}
+Metrics::rmse(actual, preds)
+Metrics::mae(actual,preds)
+```
+
+```{r}
+rss <- sum((preds - actual) ^ 2)  ## residual sum of squares
+tss <- sum((actual - mean(actual)) ^ 2)  ## total sum of squares
+rsq <- 1 - rss/tss
+print(rsq)
+```
+
+
+```{r}
+#Normalized Lm model
+lm.fitPn5 <- lm(Cost_to_pat ~., data=Pn_train3)
+lm.predictPn5 <- predict(lm.fitPn5)
+```
+
+```{r}
+plot(Pn_train3$Cost_to_pat, lm.predictPn5,
+main="Linear regression predictions vs actual",
+xlab="Actual")
+```
+
+
+
+
+
+```{r}
+plot(lm.fitPn5)
+```
+
+```{r}
+actual <- Pn_train3$Cost_to_pat
+preds <- lm.predictPn5
+```
+
+```{r}
+Metrics::rmse(actual, preds)
+Metrics::mae(actual,preds)
+```
+
+```{r}
+rss <- sum((preds - actual) ^ 2)  ## residual sum of squares
+tss <- sum((actual - mean(actual)) ^ 2)  ## total sum of squares
+rsq <- 1 - rss/tss
+print(rsq)
+```
+
+
+```{r}
+# splitting the data into training and testing sets (Pn)
+set.seed(1526)
+Pn_split1 <- initial_split(Pn1, prop = 0.70, strata = Cost_to_pat)
+Pn_train1 <- training(Pn_split1)
+Pn_test1  <- testing(Pn_split1)
+
+#cross-validation folds
+set.seed(1700)
+Pn_folds1 <- vfold_cv(Pn_train1, strata = Cost_to_pat)
+Pn_folds1
+
+```
+
+```{r}
+
+# creating the recipe for model
+
+library(embed)
+
+Pn_rec <-recipe(Cost_to_pat ~., data = Pn_train3) %>% 
+  #update_role(Prv_Zip, new_role = 'id') %>% 
+  #step_other(State, threshold = 0.01) %>% 
+  step_lencode_glm(Hosp_Own, outcome = vars(Cost_to_pat)) %>% 
+  step_dummy(all_nominal_predictors())
+
+Pn_rec
+
+```
+
+```{r}
+# xgboost for feature selection
+library(xgboost)
+#defined model for xgboost
+xgb_spec <- boost_tree(trees = tune(),
+                       min_n = tune(),
+                       mode ="regression",
+                       engine = "xgboost",
+                       mtry=tune(),
+                       learn_rate = 0.01
+                       )
+```
+
+```{r}
+# workflow
+library(workflows)
+
+xgb_wf<-workflow(Pn_rec, xgb_spec)
+
+```
+
+```{r}
+# tuning the hyperparameters for the model
+
+library(finetune)
+doParallel::registerDoParallel()
+
+set.seed(420)
+xgb_rs<-
+  tune_race_anova(
+    xgb_wf,
+    resamples = Pn_folds1,
+    grid = 15,
+    metric_set("rmse"),
+    control = control_race(verbose_elim = TRUE),
+    )
+
+xgb_rs
+
+```
+
+```{r}
+show_best(xgb_rs)
+```
+```{r}
+select_best(xgb_rs)
+```
+```{r}
+collect_metrics(xgb_last)
+```
+
+```{r}
+xgb_last <- xgb_wf %>%
+  finalize_workflow(select_best(xgb_rs, "rmse")) %>%
+  last_fit(Pn_split1)
+
+xgb_last
+```
+
+```{r}
+preds<- collect_predictions(xgb_last)
+preds
+write_csv(preds,"~/R/KDD-R/Data/preds.csv")
+```
+
+```{r}
+library(vip)
+extract_workflow(xgb_last) %>%
+  extract_fit_parsnip() %>%
+  vip(geom = "point", num_features = 5)
+```
+
+
+
+
+
+```{r}
+#cross-validation folds
+set.seed(1700)
+AMI_folds2 <- vfold_cv(AMI_train2, strata = Cost_to_pat)
+AMI_folds2
+```
+```{r}
+
+# creating the recipe for model
+
+library(embed)
+
+AMI_rec <-recipe(Cost_to_pat ~., data = AMI_train2) %>% 
+  #update_role(Prv_Zip, new_role = 'id') %>% 
+  #step_other(State, threshold = 0.01) %>% 
+  step_lencode_glm(Hosp_Own, outcome = vars(Cost_to_pat)) %>% 
+  step_dummy(all_nominal_predictors())
+
+AMI_rec
+
+```
+
+```{r}
+# xgboost for feature selection
+library(xgboost)
+#defined model for xgboost
+xgb_spec <- boost_tree(trees = tune(),
+                       min_n = tune(),
+                       mode ="regression",
+                       engine = "xgboost",
+                       mtry=tune(),
+                       learn_rate = 0.01
+                       )
+```
+
+```{r}
+# workflow
+library(workflows)
+
+xgb_wf<-workflow(AMI_rec, xgb_spec)
+
+```
+
+```{r}
+# tuning the hyperparameters for the model
+
+library(finetune)
+doParallel::registerDoParallel()
+
+set.seed(420)
+xgb_rs<-
+  tune_race_anova(
+    xgb_wf,
+    resamples = AMI_folds2,
+    grid = 15,
+    metric_set("rmse"),
+    control = control_race(verbose_elim = TRUE),
+    )
+
+xgb_rs
+
+```
+
+```{r}
+show_best(xgb_rs)
+```
+```{r}
+select_best(xgb_rs)
+```
+```{r}
+collect_metrics(xgb_last)
+```
+
+```{r}
+xgb_last <- xgb_wf %>%
+  finalize_workflow(select_best(xgb_rs, "rmse")) %>%
+  last_fit(AMI_split2)
+
+xgb_last
+```
+
+```{r}
+preds<- collect_predictions(xgb_last)
+preds
+write_csv(preds,"~/R/KDD-R/Data/predsAMI.csv")
+```
+
+```{r}
+library(vip)
+extract_workflow(xgb_last) %>%
+  extract_fit_parsnip() %>%
+  vip(geom = "point", num_features = 5)
+```
+
+
+```{}
+
+# creating the recipe for model
+
+library(embed)
+
+AMI_rec <-recipe(Cost_to_pat ~., data = AMI_train) %>% 
+  #update_role(Prv_Zip, new_role = 'id') %>% 
+  #step_other(State, threshold = 0.01) %>% 
+  step_lencode_glm(Hosp_Own, outcome = vars(Cost_to_pat)) %>% 
+  step_dummy(all_nominal_predictors())
+
+AMI_rec
+
+```
+
+```{}
+# xgboost for feature selection
+library(xgboost)
+#defined model for xgboost
+xgb_spec <- boost_tree(trees = tune(),
+                       min_n = tune(),
+                       mode ="regression",
+                       engine = "xgboost",
+                       mtry=tune(),
+                       learn_rate = 0.01
+                       )
+```
+
+```{}
+# workflow
+library(workflows)
+
+xgb_wf<-workflow(AMI_rec, xgb_spec)
+
+```
+
+```{}
+# tuning the hyperparameters for the model
+
+library(finetune)
+doParallel::registerDoParallel()
+
+set.seed(420)
+xgb_rs<-
+  tune_grid(
+    xgb_wf,
+    resamples = AMI_folds,
+    grid = 15,
+    metric_set("rmse"),
+    control = control_grid()
+    )
+
+xgb_rs
+
+```
+
+```{}
+show_best(xgb_rs)
+```
+```{}
+select_best(xgb_rs)
+```
+```{}
+collect_metrics(xgb_last)
+```
+
+```{}
+xgb_last <- xgb_wf %>%
+  finalize_workflow(select_best(xgb_rs, "rmse")) %>%
+  last_fit(AMI_split)
+
+xgb_last
+```
+
+```{}
+preds<- collect_predictions(xgb_last)
+preds
+write_csv(preds,"~/R/KDD-R/Data/preds.csv")
+```
+
+```{}
+library(vip)
+extract_workflow(xgb_last) %>%
+  extract_fit_parsnip() %>%
+  vip(geom = "point", num_features = 5)
+```
+
+
+
+

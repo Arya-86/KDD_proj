@@ -1,0 +1,400 @@
+---
+title: "Proj_exp_02"
+output: pdf_document
+date: "2022-12-05"
+---
+
+
+
+```{r}
+library(tidyverse)
+library(tidymodels)
+#library("dplyr")
+library(stringr)
+library(bestNormalize)
+#library(conflicted)
+#conflict_prefer("filter", "dplyr")
+tidymodels_prefer()
+
+```
+
+
+```{r}
+data <- read_csv("~/R/KDD-R/Data/final_data.csv", show_col_types = FALSE)
+
+```
+
+```{r}
+
+medi <- data[, -c(19:123, 3, 15, 16)]%>% 
+  dplyr::rename(Pop_total = B16010_001E)
+
+```
+
+```{}
+
+
+# Create a new computed variable
+medi$adjusted_pop <- (medi$Pop_total - medi$Margin_error_poptotal)
+view(medi)
+```
+
+```{r}
+#conflict_prefer("filter", "dplyr")
+#factor(c(medi$Hosp_oa_rat, medi$Prv_RUCA, medi$DRG_Cd, medi$Emg_Svcs))
+#medi$Hosp_oa_rat <- factor(medi$Hosp_oa_rat)
+#medi$Prv_RUCA <- factor(medi$Prv_RUCA)
+#medi$DRG_Cd <- factor(medi$DRG_Cd)
+medi$Emg_Svcs <- factor(medi$Emg_Svcs)
+#medi$Prv_CCN <- factor(medi$Prv_CCN)
+#medi$Prv_Zip <- factor(medi$Prv_Zip)
+medi$State <- factor(medi$State)
+medi$Hosp_Own <- factor(medi$Hosp_Own)
+medi$Cnt_Name <- factor(medi$Cnt_Name)
+medi$Hosp_Name<- factor(medi$Hosp_Name)
+
+view(medi)
+```
+
+```{r}
+# manulally selected the variables
+data <- medi %>% 
+  select(State, Prv_Zip,Prv_CCN, Cnt_Name, Hosp_Own,Hosp_Name, Prv_RUCA, Hosp_oa_rat, Emg_Svcs, DRG_Cd, Cost_to_pat,Pop_total)
+
+view(data)
+
+```
+
+```{r}
+#removing any duplicates
+data<- data[!duplicated(data$Hosp_Own, data$Hosp_Name),]
+
+```
+
+
+```{r}
+
+data <- data %>% mutate(Cost_to_pat = log10(Cost_to_pat))
+```
+
+```{r}
+# to split it into AMI dataset
+medi_data_AMI <- data %>% 
+  filter(DRG_Cd %in% c("246", "247", "248", "249", "250", "251","280","281","282"))
+  #filter(DRG_Cd %in% c(282))
+glimpse(medi_data_AMI)
+
+
+
+```
+```{r}
+medi_data_AMI %>% 
+  ggplot (aes(x = Cost_to_pat)) +
+  geom_histogram(bins = 50, col= "white")
+```
+
+```{r}
+# to create Pnuemonia dataset
+medi_data_Pn <- data %>% 
+  filter(DRG_Cd %in% c('177', '178', '179', '193', '194', '195'))
+
+
+glimpse(medi_data_Pn)
+```
+
+```{r}
+# splitting the data into training and testing sets (AMI)
+set.seed(1526)
+AMI_split <- initial_split(medi_data_AMI, prop = 0.70)
+AMI_train <- training(AMI_split)
+AMI_test  <- testing(AMI_split)
+
+#cross-validation folds
+set.seed(1700)
+AMI_folds <- vfold_cv(AMI_train)
+AMI_folds
+
+```
+```{r}
+ggplot(AMI_train, aes(x = Cost_to_pat)) +
+  geom_histogram(bins = 30, col= "white")
+```
+```{r}
+ggplot(ames, aes(x = Sale_Price)) +
+  geom_histogram(bins = 50, col= "white")+
+  scale_x_log10()
+```
+```{r}
+ggplot(AMI_train, aes(x = Pop_total)) +
+  geom_histogram(bins = 30, col= "white")
+```
+```{r}
+ggplot(AMI_train, aes(x = Pop_total)) +
+  geom_histogram(bins = 30, col= "white")+
+  scale_x_log10()
+```
+```{}
+AMI_train$Pop_total <- (AMI_train$Pop_total - mean(AMI_train$Pop_total)) / sd(AMI_train$Pop_total)
+```
+
+```{r}
+ggplot(AMI_train, aes(x = Pop_total)) +
+  geom_histogram(bins = 30, col= "white")
+```
+```{r}
+summary(AMI_train$Pop_total)
+```
+
+```{r}
+
+# creating the recipe for model
+
+library(embed)
+
+AMI_rec <-recipe(Cost_to_pat ~., data = AMI_train) %>% 
+  update_role(Prv_Zip,Cnt_Name, Hosp_Own, new_role = 'id') %>% 
+  step_other(State, threshold = 0.01) %>% 
+  step_lencode_glm(State, Hosp_Name, outcome = vars(Cost_to_pat)) %>% 
+  step_dummy(all_nominal_predictors())
+
+AMI_rec
+
+```
+```{}
+prep(AMI_rec) %>% 
+  tidy(number = 1) %>% 
+  filter(level == "..new")
+
+```
+```{r}
+# xgboost for feature selection
+library(xgboost)
+#defined model for xgboost
+xgb_spec <- boost_tree(trees = tune(),
+                       min_n = tune(),
+                       mode ="regression",
+                       engine = "xgboost",
+                       mtry=tune(),
+                       learn_rate = 0.01
+                       )
+```
+
+```{r}
+# workflow
+library(workflows)
+
+xgb_wf<-workflow(AMI_rec, xgb_spec)
+
+```
+
+```{r}
+# tuning the hyperparameters for the model
+
+library(finetune)
+doParallel::registerDoParallel()
+
+set.seed(420)
+xgb_rs<-
+  tune_race_anova(
+    xgb_wf,
+    resamples = AMI_folds,
+    grid = 15,
+    metric_set("rmse"),
+    control = control_race(verbose_elim = TRUE),
+    )
+
+xgb_rs
+
+```
+
+```{r}
+plot_race(xgb_rs)
+```
+
+```{r}
+show_best(xgb_rs)
+```
+
+```{r}
+xgb_last <- xgb_wf %>%
+  finalize_workflow(select_best(xgb_rs, "rmse")) %>%
+  last_fit(AMI_split)
+
+xgb_last
+```
+```{r}
+collect_predictions(xgb_last)
+```
+```{r}
+library(vip)
+extract_workflow(xgb_last) %>%
+  extract_fit_parsnip() %>%
+  vip(geom = "point", num_features = 5)
+```
+```{r}
+library(vip)
+extract_workflow(xgb_last) %>%
+  extract_fit_parsnip() %>%
+  vip(geom = "point", num_features = 10)
+```
+```{r}
+library(vip)
+extract_workflow(xgb_last) %>%
+  extract_fit_parsnip() %>%
+  vip(geom = "point")
+```
+
+
+
+```{r}
+
+tree_spec <- 
+  decision_tree() %>%
+  set_engine('rpart') %>%  # rpart, c5.0, spark
+  set_mode('regression')
+
+```
+
+```{r}
+tree_wflow <-
+ workflow() %>%
+ add_recipe(AMI_rec) %>% 
+ add_model(tree_spec)
+```
+
+
+```{r}
+tree_res <- 
+  tree_wflow %>% 
+  fit_resamples(
+    resamples = AMI_folds, 
+    metrics = metric_set(rmse, rsq, mae, mape),
+    control = control_resamples(save_pred = TRUE)
+    )
+```
+
+```{r}
+collect_metrics(tree_res)
+
+```
+```{r}
+show_best(tree_res, "mae")
+
+```
+ˆ 
+```{r}
+show_best(tree_res, "rmse")
+
+```
+```{r}
+select_best(tree_res, "rmse")
+```
+```{r}
+final_tree <- finalize_model(tree_spec, select_best(tree_res, "rmse"))
+
+final_tree
+```
+
+```{r}
+final_fit <- fit(final_tree, Cost_to_pat ~ ., AMI_train)
+final_res <- last_fit(final_tree, Cost_to_pat ~ ., AMI_split)
+```
+
+```{r}
+final_fit %>%
+  vip(geom = "col", aesthetics = list(fill = "darkblue", alpha = 0.8)) +
+  scale_y_continuous(expand = c(0, 0))
+```
+```{r}
+collect_metrics(final_res)
+```
+```{r}
+collect_predictions(tree_res)
+```
+
+```{r}
+collect_metrics(tree_res)
+```
+```{r}
+collect_predictions(final_res)
+```
+
+```{r}
+#library(keras)
+
+nnet_spec <- 
+  mlp(epochs = 10, hidden_units = 5, dropout = 0.1) %>% 
+  set_mode("regression") %>% 
+  set_engine("nnet", verbose = 0)
+
+```
+
+```{r}
+nnet_wflow <- workflow() %>% 
+  add_recipe(AMI_rec) %>% 
+  add_model(nnet_spec)
+```
+
+```{r}
+set.seed(2344)
+nnet_res <- 
+  nnet_wflow %>% 
+  fit_resamples(
+    resamples = AMI_folds, 
+    metrics = metric_set(rmse, rsq, mae, mape,
+      ),
+    control = control_resamples(save_pred = TRUE)
+    )
+```
+
+```{r}
+show_best(nnet_res)
+```
+
+
+```{r}
+nnet_last <- nnet_wflow %>%
+  finalize_workflow(select_best(nnet_res, "rmse")) %>%
+  last_fit(AMI_split)
+
+nnet_last
+```
+
+```{r}
+collect_predictions(nnet_last)
+```
+
+```{r}
+collect_metrics(nnet_last)
+```
+```{r}
+lm_model <-
+  linear_reg() %>%
+  set_engine("lm")
+```
+```{r}
+lm_form_fit <-
+  lm_model %>%
+  # Recall that Sale_Price has been pre-logged
+  fit(Sale_Price ~ Longitude + Latitude, data = ames_train)
+
+
+```
+
+```{}
+# standardize the data
+
+#ptk$cdur_scaled <- scale(ptk$cdur)
+
+AMI_train$Cost_to_pat_scaled<- scale(AMI_train$Cost_to_pat)
+```
+
+
+
+
+  
+
+
+
+
+
